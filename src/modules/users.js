@@ -89,17 +89,14 @@ function users(state = initialState, action) {
     case GET_USER:
       return {
         ...state,
-        loading: {
-          ...state.loading,
-          user: true,
-        },
+        loading: { ...state.loading, user: true },
         error: { ...state.error, user: null }
       };
     case GET_USER_SUCCESS:
       return {
         ...state,
         loading: { ...state.loading, user: false },
-        use: action.payload,
+        user: action.payload,
       };
     case GET_USER_FAILURE:
       return {
