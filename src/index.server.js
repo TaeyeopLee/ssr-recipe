@@ -20,7 +20,7 @@ const chunks = Object.keys(manifest.files)
   .map(key => `<script src="${manifest.files[key]}"></script>`) // convert to script tag
   .join(''); // merge
 
-function createPage(root) {
+function createPage(root, stateScript) {
   return `<!DOCTYPE html>
   <html lang="en">
   <head>
@@ -38,6 +38,7 @@ function createPage(root) {
     <div id="root">
       ${root}
     </div>
+    ${stateScript}
     <script src="${manifest.files['runtime-main.js']}"></script>
     ${chunks}
     <script src="${manifest.files['main.js']}"></script>
@@ -76,9 +77,13 @@ const serverRender = async (req, res, next) => {
     return res.status(500)
   }
   preloadContext.done = true;
-  
+
   const root = ReactDOMServer.renderToString(jsx); // do the rendering
-  res.send(createPage(root)); // response result to client
+  // convert json to string and replace < to prevent to execute other script.
+  // https://redux.js.org/recipes/server-rendering#security-considerations
+  const stateString = JSON.stringify(store.getState()).replace(/</g, '\\u003c');
+  const stateScript = `<script>__PRELOADED_STATE__ = ${stateString}</script>`;// inject initial redux state as script.
+  res.send(createPage(root, stateScript)); // response result to client
 }
 
 const serve = express.static(path.resolve('./build'), {
