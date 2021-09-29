@@ -1,48 +1,43 @@
 import React from 'react';
 import ReactDOMServer from 'react-dom/server';
 import express from 'express';
-import { StaticRouter } from 'react-router';
+import { StaticRouter } from 'react-router-dom';
 import App from './App';
 import path from 'path';
-import fs from 'fs';
 import { createStore, applyMiddleware } from 'redux';
 import { Provider } from 'react-redux';
 import thunk from 'redux-thunk';
-import rootReducer from './modules';
+import createSagaMiddleware from 'redux-saga';
+import rootReducer, { rootSaga } from './modules';
 import PreloadContext from './lib/PreloadContext';
-// looking for file path from asset-manifest.json
-const manifest = JSON.parse(
-  fs.readFileSync(path.resolve('./build/asset-manifest.json'), 'utf8')
-);
+import { END } from 'redux-saga';
+import { ChunkExtractor, ChunkExtractorManager } from '@loadable/server';
 
-const chunks = Object.keys(manifest.files)
-  .filter(key => /chunk\.js$/.exec(key)) // find key with chunk.js
-  .map(key => `<script src="${manifest.files[key]}"></script>`) // convert to script tag
-  .join(''); // merge
+const statsFile = path.resolve('./build/loadable-stats.json');
 
-function createPage(root) {
+function createPage(root, tags) {
   return `<!DOCTYPE html>
-  <html lang="en">
-  <head>
-      <meta charaset="utf-8" />
+    <html lang="en">
+    <head>
+      <meta charset="utf-8" />
       <link rel="shortcut icon" href="/favicon.ico" />
       <meta
         name="viewport"
-        content="width=device-width,initial-scale=1,shrink-to-fit=no" />
+        content="width=device-width,initial-scale=1,shrink-to-fit=no"
+      />
       <meta name="theme-color" content="#000000" />
       <title>React App</title>
-      <link href="${manifest.files['main.css']}" rel="stylesheet" />
-  </head>
-  <body>
-    <noscript>You need to enable JavaScript to run this app.</noscript>
-    <div id="root">
-      ${root}
-    </div>
-    <script src="${manifest.files['runtime-main.js']}"></script>
-    ${chunks}
-    <script src="${manifest.files['main.js']}"></script>
-  </body>
-  </html>
+      ${tags.styles}
+      ${tags.links}
+    </head>
+    <body>
+      <noscript>You need to enable JavaScript to run this app.</noscript>
+      <div id="root">
+        ${root}
+      </div>
+      ${tags.scripts}
+    </body>
+    </html>
   `;
 }
 
@@ -52,24 +47,38 @@ const app = express();
 const serverRender = async (req, res, next) => {
   // this function do server side rendering when situation is 404
   const context = {};
-  const store = createStore(rootReducer, applyMiddleware(thunk));
+  const sagaMiddleware = createSagaMiddleware();
+  const store = createStore(
+    rootReducer, 
+    applyMiddleware(thunk, sagaMiddleware)
+  );
+
+  const sagaPromise = sagaMiddleware.run(rootSaga).toPromise();
 
   const preloadContext = {
     done: false,
     promises: []
   };
 
+  // 필요한 파일 추출하기 위한 ChunkExtractor
+  const extractor = new ChunkExtractor({ statsFile });
+
   const jsx = (
-    <PreloadContext.Provider value={preloadContext}>
-      <Provider store={store} >
-        <StaticRouter location={req.url} context={context}>
-          <App />
-        </StaticRouter>
-      </Provider>
-    </PreloadContext.Provider>
+    <ChunkExtractorManager extractor={extractor}>
+      <PreloadContext.Provider value={preloadContext}>
+        <Provider store={store}>
+          <StaticRouter location={req.url} context={context}>
+            <App />
+          </StaticRouter>
+        </Provider>
+      </PreloadContext.Provider>
+    </ChunkExtractorManager>
   );
+
   ReactDOMServer.renderToStaticMarkup(jsx);
+  store.dispatch(END);
   try {
+    await sagaPromise;
     await Promise.all(preloadContext.promises);
   }
   catch (e) {
@@ -78,7 +87,15 @@ const serverRender = async (req, res, next) => {
   preloadContext.done = true;
   
   const root = ReactDOMServer.renderToString(jsx); // do the rendering
-  res.send(createPage(root)); // response result to client
+  const stateString = JSON.stringify(store.getState()).replace(/</g, '\\u003c');
+  const stateScript = `<script>__PRELOADED_STATE__ = ${stateString}</script>`;
+
+  const tags = {
+    scripts: stateScript + extractor.getScriptTags(),// input redux state in front of script.
+    links: extractor.getLinkTags(),
+    styles: extractor.getStyleTags(),
+  };
+  res.send(createPage(root, tags)); // response result to client
 }
 
 const serve = express.static(path.resolve('./build'), {
